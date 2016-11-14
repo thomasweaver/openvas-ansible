@@ -1,0 +1,153 @@
+---
+- hosts: openvas
+  remote_user: vagrant
+  sudo: yes
+  vars:
+     openvas_source:
+       - { name: 'openvas-libraries-8.0.1', targz: 'openvas-libraries-8.0.1.tar.gz', url: 'http://wald.intevation.org/frs/download.php/2015/openvas-libraries-8.0.1.tar.gz' }
+       - { name: 'openvas-scanner-5.0.1', targz: 'openvas-scanner-5.0.1.tar.gz', url: 'http://wald.intevation.org/frs/download.php/2016/openvas-scanner-5.0.1.tar.gz' }
+       - { name: 'openvas-manager-6.0.1', targz: 'openvas-manager-6.0.1.tar.gz', url: 'http://wald.intevation.org/frs/download.php/2017/openvas-manager-6.0.1.tar.gz' }
+       - { name: 'greenbone-security-assistant-6.0.1', targz: 'greenbone-security-assistant-6.0.1.tar.gz', url: 'http://wald.intevation.org/frs/download.php/2018/greenbone-security-assistant-6.0.1.tar.gz' }
+       - { name: 'openvas-cli-1.4.0', targz: 'openvas-cli-1.4.0.tar.gz', url: 'http://wald.intevation.org/frs/download.php/1987/openvas-cli-1.4.0.tar.gz' }
+     generic_builds:
+       - { name: 'dirb222', targz: 'dirb222.tar.gz', url: 'http://downloads.sourceforge.net/project/dirb/dirb/2.22/dirb222.tar.gz' }
+     download_extract:
+       - { name: 'arachni-1.1-0.5.7', targz: 'arachni-1.1-0.5.7-linux-x86_64.tar.gz', url: 'http://downloads.sourceforge.net/project/arachni/arachni-1.1-0.5.7-linux-x86_64.tar.gz' }       
+     openvas_build:
+       - 'cmake ..'
+       - 'make'
+       - 'make doc'
+       - 'make doc-full'
+       - 'make install'
+       - 'make rebuild_cache'
+
+  tasks:
+   - name: Creating Working Dir
+     file: path='/tmp/openvas' state=directory mode=0777
+   - name: Download Files
+     get_url: url={{ item.url }} dest=/tmp/openvas/{{ item.targz }}
+     with_items: openvas_source + generic_builds + download_extract
+   - name: Extract Files
+     command: tar -xzf /tmp/openvas/{{ item.targz }} -C /tmp/openvas
+     with_items: openvas_source + generic_builds + download_extract
+   - name: Copy Arachni to home bin folder
+     shell: mkdir /usr/local/share/arachni && cp -R /tmp/openvas/{{ download_extract[0].name }}/bin /usr/local/share/arachni/. && cp -R /tmp/openvas/{{ download_extract[0].name }}/system /usr/local/share/arachni/. creates=/usr/local/share/arachni
+   - name: Check Environment Path
+     command: echo /etc/environment
+     register: environment_output
+   - name: Set Up Arachni Path
+     command: echo "PATH=\"${PATH}:/usr/local/share/arachni/bin\"" > /etc/environment
+     when: environment_output.stdout.find("/usr/local/share/bin") == -1
+   - name: Install Prerequisites
+     apt: name={{ item }} state=present force=yes update_cache=yes 
+     with_items:
+       - 'cmake'
+       - 'build-essential'
+       - 'nmap'
+       - 'pkg-config'
+       - 'libssh-dev'
+       - 'libgnutls-dev'
+       - 'libglib2.0-dev'
+       - 'libpcap-dev'
+       - 'libgpgme11-dev'
+       - 'uuid-dev'
+       - 'bison'
+       - 'libksba-dev'
+       - 'libhiredis-dev'
+       - 'libsnmp-dev'
+       - 'libldap2-dev'
+       - 'doxygen'
+       - 'redis-server'
+#       - 'libgcrypt-dev'
+       - 'zlib1g-dev'
+       - 'libssh-dev'
+       - 'libhiredis-dev'
+       - 'sqlite3'
+       - 'xmltoman'
+#       - 'sqlfairy'
+       - 'libsqlite3-dev'
+       - 'xsltproc'
+       - 'libmicrohttpd-dev'
+       - 'libxml2-dev'
+       - 'libxslt1-dev'
+       - 'texlive-latex-base'
+       - 'texlive-latex-extra'
+       - 'texlive-latex-recommended'
+       - 'htmldoc'
+       - 'wapiti'
+#       - 'nikto'
+       - 'libcurl3'
+       - 'libcurl4-gnutls-dev'
+   - name: Set up build folders
+     file: path='/tmp/openvas/{{ item.name }}/build' state=directory mode=0777
+     with_items: openvas_source
+   - name: Add /usr/lib/local to search path
+     shell: ldconfig /usr/local/lib
+   - name: Build Openvas Binaries
+     shell: cmake .. && make && make doc && make doc-full && make install && make rebuild_cache
+     args:
+       chdir: /tmp/openvas/{{ item.name }}/build
+     with_items: openvas_source
+   - name: Build Generic Binaries
+     shell: chmod a+x configure && ./configure .. && make && make install
+     args:
+       chdir: /tmp/openvas/{{ item.name }}
+     with_items: generic_builds
+   - name: Add /usr/lib/local to search path
+     shell: ldconfig /usr/local/lib
+   - name: Copy Over Openvas Checker
+     copy: src=files/openvas-check-setup dest=/usr/bin/openvas-check-setup owner=root group=root mode=755
+   - name: Setup Scanner Certificate
+     shell: openvas-mkcert -q -f creates=/usr/local/var/lib/openvas/CA/servercert.pem
+   - name: NVT Sync
+     action: shell openvas-nvt-sync
+     register: result
+#     until: result.rc == 0
+#     retries: 2
+   - name: Copy Over Scanner Upstart
+     copy: src=files/openvassd.conf dest=/etc/init/openvassd.conf owner=root group=root mode=644
+   - name: Copy Over Manager Upstart
+     copy: src=files/openvasmd.conf dest=/etc/init/openvasmd.conf owner=root group=root mode=644
+   - name: Copy Over GSAD Upstart
+     copy: src=files/gsad.conf dest=/etc/init/gsad.conf owner=root group=root mode=644
+   - name: Openvas Start Scanner
+     service: name=openvassd state=restarted
+   - name: Copy over redis Config
+     copy: src=files/redis.conf dest=/etc/redis/redis.conf owner=root group=root mode=655
+   - name: Restart Redis
+     service: name=redis-server state=restarted
+   - name: Openvas Make Client cert
+     shell: openvas-mkcert-client -n -i creates=/usr/local/var/lib/openvas/CA/clientcert.pem
+   - name: Openvas Rebuild
+     shell: openvasmd --rebuild
+     ignore_errors: yes
+   - name: Openvas Create User
+     shell: openvasmd --create-user=admin --role=Admin && openvasmd --user=admin --new-password=admin
+     ignore_errors: yes
+   - name: Openvas Sync SCAP Data
+     action: shell openvas-scapdata-sync
+     register: result
+     until: result.rc == 0
+     retries: 2
+   - name: Openvas Sync Cert Data
+     action: shell openvas-certdata-sync
+     register: result
+     until: result.rc == 0
+     retries: 2
+   - name: Start Openvas Manager
+     service: name=openvasmd state=restarted
+   - name: Start Greenbone
+     service: name=gsad state=restarted
+   - name: Get Scan Configs
+     shell: omp -h 127.0.0.1 -p 9390 -u admin -w admin --xml "<get_configs/>"
+     register: scan_configs
+   - name: Upload Scan Config
+     copy: src=files/scan-config.xml dest=/tmp/scan-config.xml owner=root group=root mode=655
+     when: scan_configs.stdout.find("Full") == -1
+     notify:
+     - Import Scan Config
+
+  handlers:
+   - name: Import Scan Config
+     shell: cat /tmp/scan-config.xml | omp -h 127.0.0.1 -p 9390 -u admin -w admin --xml -
+
